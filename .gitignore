@@ -1,0 +1,9 @@
+/target
+assets
+Cargo.lock
+*.266
+*.png
+*.gz
+.idea
+app/target
+*.jpg

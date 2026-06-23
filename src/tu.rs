@@ -111,7 +111,7 @@ fn encode_component_residual(
     let ts_allowed = w <= 32 && h <= 32;
     let use_ts = (lossless || ts) && ts_allowed;
     debug_assert!(
-        !(lossless && !ts_allowed),
+        !lossless || ts_allowed,
         "lossless block >32 cannot use transform-skip"
     );
     if !bdpcm && ts_allowed {

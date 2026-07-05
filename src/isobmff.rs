@@ -139,6 +139,32 @@ fn patch(buf: &mut [u8], start: usize) {
     buf[start..start + 4].copy_from_slice(&size.to_be_bytes());
 }
 
+fn stored_extent(width: u32, height: u32, chroma: ChromaFormat) -> (u32, u32) {
+    let sub_w = chroma.sub_w() as u32;
+    let sub_h = chroma.sub_h() as u32;
+    (
+        width.div_ceil(sub_w) * sub_w,
+        height.div_ceil(sub_h) * sub_h,
+    )
+}
+
+fn coded_extent(width: u32, height: u32) -> (u32, u32) {
+    ((width + 7) & !7, (height + 7) & !7)
+}
+
+fn write_clap(buf: &mut Vec<u8>, width: u32, height: u32, stored_w: u32, stored_h: u32) {
+    let s = write_box(buf, b"clap");
+    w32(buf, width); // clean_aperture_width_n
+    w32(buf, 1); // clean_aperture_width_d
+    w32(buf, height); // clean_aperture_height_n
+    w32(buf, 1); // clean_aperture_height_d
+    w32(buf, width.wrapping_sub(stored_w)); // horiz_off_n, signed
+    w32(buf, 2); // horiz_off_d
+    w32(buf, height.wrapping_sub(stored_h)); // vert_off_n, signed
+    w32(buf, 2); // vert_off_d
+    patch(buf, s);
+}
+
 /// `general_profile_idc` for the VVC profile garnetash signals: Main 10 4:4:4
 /// (33) for the 4:2:2 / 4:4:4 family, Main 10 (1) otherwise. Mirrors
 /// `headers::Sps::profile_idc`.
@@ -249,6 +275,9 @@ pub(crate) fn wrap_vvc_still(
     color: &ColorMetadata,
     meta: &ImageMetadata,
 ) -> Result<Vec<u8>, EncodeError> {
+    let (stored_w, stored_h) = stored_extent(width, height, chroma);
+    let (coded_w, coded_h) = coded_extent(width, height);
+    let needs_clap = (stored_w, stored_h) != (width, height);
     let nals = split_annexb(annexb);
     if nals.is_empty() {
         return Err(EncodeError::Unsupported(
@@ -285,8 +314,8 @@ pub(crate) fn wrap_vvc_still(
         &pps,
         chroma_idc,
         bd,
-        width.min(0xffff) as u16,
-        height.min(0xffff) as u16,
+        coded_w.min(0xffff) as u16,
+        coded_h.min(0xffff) as u16,
         profile_idc(chroma),
     );
 
@@ -404,7 +433,7 @@ pub(crate) fn wrap_vvc_still(
         patch(&mut f, s);
     }
 
-    // iprp { ipco { vvcC, colr, ispe, pixi, [prof, irot, imir, clli] }, ipma }.
+    // iprp { ipco { vvcC, colr, ispe, pixi, [clap, prof, irot, imir, clli] }, ipma }.
     {
         let s = write_box(&mut f, b"iprp");
         // Optional property indices (0 = absent).
@@ -412,6 +441,7 @@ pub(crate) fn wrap_vvc_still(
         let mut irot_idx = 0u8;
         let mut imir_idx = 0u8;
         let mut clli_idx = 0u8;
+        let clap_idx = if needs_clap { 5 } else { 0 };
         {
             let si = write_box(&mut f, b"ipco");
             // 1: vvcC (essential decoder config).
@@ -429,8 +459,8 @@ pub(crate) fn wrap_vvc_still(
             // 3: ispe (image spatial extents).
             {
                 let sh = write_fullbox(&mut f, b"ispe", 0, 0);
-                w32(&mut f, width);
-                w32(&mut f, height);
+                w32(&mut f, stored_w);
+                w32(&mut f, stored_h);
                 patch(&mut f, sh);
             }
             // 4: pixi (bits per channel).
@@ -442,8 +472,11 @@ pub(crate) fn wrap_vvc_still(
                 }
                 patch(&mut f, sh);
             }
+            if needs_clap {
+                write_clap(&mut f, width, height, stored_w, stored_h);
+            }
             // 5+: optional properties.
-            let mut next: u8 = 5;
+            let mut next: u8 = if needs_clap { 6 } else { 5 };
             if color.has_secondary_colr()
                 && let Some(icc) = &color.icc
             {
@@ -478,6 +511,9 @@ pub(crate) fn wrap_vvc_still(
         // ipma: associate properties with item 1.
         {
             let mut assoc: Vec<u8> = vec![0x80 | 1, 2, 3, 4]; // vvcC* colr ispe pixi
+            if clap_idx != 0 {
+                assoc.push(0x80 | clap_idx);
+            }
             if colr2_idx != 0 {
                 assoc.push(colr2_idx);
             }
@@ -570,12 +606,15 @@ pub(crate) fn wrap_vvc_still_with_alpha(
     color: &ColorMetadata,
 ) -> Result<Vec<u8>, EncodeError> {
     const ALPHA_URN: &[u8] = b"urn:mpeg:mpegB:cicp:systems:auxiliary:alpha\0";
+    let (stored_w, stored_h) = stored_extent(width, height, chroma);
+    let (coded_w, coded_h) = coded_extent(width, height);
+    let needs_clap = (stored_w, stored_h) != (width, height);
     let (m_sps, m_pps, m_sample) = split_for_container(master)?;
     let (a_sps, a_pps, a_sample) = split_for_container(alpha)?;
 
     let bd = bit_depth.bits();
-    let w16cap = width.min(0xffff) as u16;
-    let h16cap = height.min(0xffff) as u16;
+    let w16cap = coded_w.min(0xffff) as u16;
+    let h16cap = coded_h.min(0xffff) as u16;
     let m_vvcc = build_vvcc(
         &m_sps,
         &m_pps,
@@ -661,7 +700,8 @@ pub(crate) fn wrap_vvc_still_with_alpha(
         patch(&mut f, si);
         patch(&mut f, s);
     }
-    // iprp { ipco { (master) vvcC,colr,ispe,pixi ; (alpha) vvcC,ispe,pixi,auxC }, ipma }.
+    // iprp { ipco { (master) vvcC,colr,ispe,pixi ;
+    //               (alpha) vvcC,ispe,pixi,auxC ; [master clap] }, ipma }.
     {
         let s = write_box(&mut f, b"iprp");
         {
@@ -678,8 +718,8 @@ pub(crate) fn wrap_vvc_still_with_alpha(
             }
             // 3: ispe
             let sh = write_fullbox(&mut f, b"ispe", 0, 0);
-            w32(&mut f, width);
-            w32(&mut f, height);
+            w32(&mut f, stored_w);
+            w32(&mut f, stored_h);
             patch(&mut f, sh);
             // 4: pixi (master channels)
             let sh = write_fullbox(&mut f, b"pixi", 0, 0);
@@ -706,6 +746,10 @@ pub(crate) fn wrap_vvc_still_with_alpha(
             let sh = write_fullbox(&mut f, b"auxC", 0, 0);
             f.extend_from_slice(ALPHA_URN);
             patch(&mut f, sh);
+            // 9: master clean aperture, when subsampling retained an edge sample.
+            if needs_clap {
+                write_clap(&mut f, width, height, stored_w, stored_h);
+            }
             patch(&mut f, si);
         }
         // ipma: item1 -> {1,2,3,4}, item2 -> {5,6,7,8}.
@@ -713,8 +757,11 @@ pub(crate) fn wrap_vvc_still_with_alpha(
             let si = write_fullbox(&mut f, b"ipma", 0, 0);
             w32(&mut f, 2); // entry_count
             w16(&mut f, 1);
-            f.push(4);
+            f.push(if needs_clap { 5 } else { 4 });
             f.extend_from_slice(&[0x80 | 1, 2, 3, 4]);
+            if needs_clap {
+                f.push(0x80 | 9);
+            }
             w16(&mut f, 2);
             f.push(4);
             f.extend_from_slice(&[0x80 | 5, 6, 7, 0x80 | 8]);
@@ -907,7 +954,8 @@ pub(crate) fn extract_alpha_stream(heif: &[u8]) -> Option<Vec<u8>> {
     extract_item(heif, 1).ok()
 }
 
-/// Read the `ispe` display extent associated with an image item.
+/// Read an image item's display extent, applying garnetash's master `clap` when
+/// the subsampled coded image retained a replicated right or bottom edge.
 pub(crate) fn extract_spatial_extents(heif: &[u8], want: usize) -> Option<(u32, u32)> {
     let (meta_s, meta_e) = find_child(heif, 0, heif.len(), b"meta", true)?;
     let (iprp_s, iprp_e) = find_child(heif, meta_s, meta_e, b"iprp", false)?;
@@ -916,7 +964,27 @@ pub(crate) fn extract_spatial_extents(heif: &[u8], want: usize) -> Option<(u32, 
     if ispe_s + 12 > ispe_e {
         return None;
     }
-    Some((rd32(heif, ispe_s + 4)?, rd32(heif, ispe_s + 8)?))
+    let stored = (rd32(heif, ispe_s + 4)?, rd32(heif, ispe_s + 8)?);
+    if want != 0 {
+        return Some(stored);
+    }
+    let (clap_s, clap_e) = match find_child(heif, ipco_s, ipco_e, b"clap", false) {
+        Some(range) => range,
+        None => return Some(stored),
+    };
+    if clap_s + 32 > clap_e {
+        return None;
+    }
+    let (wn, wd) = (rd32(heif, clap_s)?, rd32(heif, clap_s + 4)?);
+    let (hn, hd) = (rd32(heif, clap_s + 8)?, rd32(heif, clap_s + 12)?);
+    if wd == 0 || hd == 0 {
+        return None;
+    }
+    let display = (wn.div_ceil(wd), hn.div_ceil(hd));
+    if display.0 > stored.0 || display.1 > stored.1 {
+        return None;
+    }
+    Some(display)
 }
 
 /// Read the master image's display orientation and color metadata from the
@@ -1029,5 +1097,45 @@ mod tests {
         assert_eq!(v[5], 0x02); // profile 1 << 1 | tier 0
         assert_eq!(v[6], 102); // level 6.2
         assert_eq!(v[7], 0x80); // frame_only=1, multilayer=0, gci=0
+    }
+
+    #[test]
+    fn odd_420_uses_stored_extent_and_clean_aperture() {
+        let mut annexb = Vec::new();
+        for second in [0x78, 0x80, 0x00] {
+            annexb.extend_from_slice(&[0, 0, 0, 1, 1, second, 1]);
+        }
+        let heif = wrap_vvc_still(
+            &annexb,
+            9,
+            11,
+            BitDepth::Eight,
+            ChromaFormat::Yuv420,
+            &ColorMetadata::default(),
+            &ImageMetadata::default(),
+        )
+        .unwrap();
+        let (meta_s, meta_e) = find_child(&heif, 0, heif.len(), b"meta", true).unwrap();
+        let (iprp_s, iprp_e) = find_child(&heif, meta_s, meta_e, b"iprp", false).unwrap();
+        let (ipco_s, ipco_e) = find_child(&heif, iprp_s, iprp_e, b"ipco", false).unwrap();
+        let (ispe_s, _) = find_child(&heif, ipco_s, ipco_e, b"ispe", false).unwrap();
+        assert_eq!(
+            (rd32(&heif, ispe_s + 4), rd32(&heif, ispe_s + 8)),
+            (Some(10), Some(12))
+        );
+        let (clap_s, _) = find_child(&heif, ipco_s, ipco_e, b"clap", false).unwrap();
+        assert_eq!(
+            &heif[clap_s..clap_s + 16],
+            &[0, 0, 0, 9, 0, 0, 0, 1, 0, 0, 0, 11, 0, 0, 0, 1]
+        );
+        assert_eq!(rd32(&heif, clap_s + 16), Some(u32::MAX));
+        assert_eq!(rd32(&heif, clap_s + 20), Some(2));
+        assert_eq!(rd32(&heif, clap_s + 24), Some(u32::MAX));
+        assert_eq!(rd32(&heif, clap_s + 28), Some(2));
+        assert_eq!(extract_spatial_extents(&heif, 0), Some((9, 11)));
+
+        let (ipma_s, _) = find_child(&heif, iprp_s, iprp_e, b"ipma", true).unwrap();
+        assert_eq!(heif[ipma_s + 6], 5);
+        assert_eq!(&heif[ipma_s + 7..ipma_s + 12], &[0x81, 2, 3, 4, 0x85]);
     }
 }

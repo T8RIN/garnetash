@@ -1642,6 +1642,18 @@ mod tests {
             let a_channel: Vec<u8> = rgba.chunks_exact(4).map(|p| p[3]).collect();
             assert_eq!(alpha.planes, a_channel, "alpha {chroma:?}");
         }
+
+        let (w, h) = (9u32, 11u32);
+        let rgba = vec![127u8; (w * h * 4) as usize];
+        let cfg = EncodeConfig::new()
+            .with_lossless(true)
+            .with_chroma(ChromaFormat::Yuv420);
+        let heif = encode_rgba_with_alpha(&rgba, w, h, &cfg).unwrap();
+        let (master, alpha) = decode_with_alpha(&heif).unwrap();
+        assert_eq!((master.width, master.height), (w, h));
+        let alpha = alpha.unwrap();
+        assert_eq!((alpha.width, alpha.height), (w, h));
+        assert_eq!(alpha.planes, vec![127; (w * h) as usize]);
     }
 
     #[test]

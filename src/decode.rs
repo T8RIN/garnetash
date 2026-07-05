@@ -462,8 +462,8 @@ fn decode_inner(annexb: &[u8]) -> Result<DecodedImage, EncodeError> {
         decode_partitions_dual(
             &mut dec,
             &mut ctx,
-            cw as u32,
-            ch as u32,
+            width as u32,
+            height as u32,
             luma_cfg,
             chroma_cfg,
             |d, c, grid, x, y, w, h| {
@@ -1224,8 +1224,8 @@ fn decode_inner(annexb: &[u8]) -> Result<DecodedImage, EncodeError> {
             crate::partition::test_support::decode_partitions_mtt(
                 &mut dec,
                 &mut ctx,
-                cw as u32,
-                ch as u32,
+                width as u32,
+                height as u32,
                 crate::partition::mtt_cfg(),
                 |d, c, g, x, y, w, h| leaf(d, c, g, x as usize, y as usize, w as usize, h as usize),
             );
@@ -1233,8 +1233,8 @@ fn decode_inner(annexb: &[u8]) -> Result<DecodedImage, EncodeError> {
             decode_partitions(
                 &mut dec,
                 &mut ctx,
-                cw as u32,
-                ch as u32,
+                width as u32,
+                height as u32,
                 |d, c, g, x, y, s| {
                     if deblock_on {
                         db_leaves.push((x as usize, y as usize, s as usize, s as usize));

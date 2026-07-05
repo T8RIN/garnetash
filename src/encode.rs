@@ -2679,6 +2679,7 @@ fn encode_planes(
     let bit_depth = headers.bit_depth.bits();
     let qp = headers.qp;
     let lossless = headers.lossless;
+    let (pic_w, pic_h) = (headers.width, headers.height);
     let cw = headers.coded_width() as usize;
     let ch = headers.coded_height() as usize;
     let (sub_w, sub_h) = (chroma.sub_w(), chroma.sub_h());
@@ -2718,8 +2719,8 @@ fn encode_planes(
         let _ = code_partitions(
             &mut throwaway,
             &mut tctx,
-            cw as u32,
-            ch as u32,
+            pic_w,
+            pic_h,
             &decide_fn,
             |_enc, _ctx, _grid, x, y, size| {
                 let (xu, yu, nu) = (x as usize, y as usize, size as usize);
@@ -2874,8 +2875,8 @@ fn encode_planes(
             code_partitions_dual(
                 &mut tenc,
                 &mut tctx,
-                cw as u32,
-                ch as u32,
+                pic_w,
+                pic_h,
                 luma_cfg,
                 chroma_cfg,
                 luma_decide,
@@ -3010,8 +3011,8 @@ fn encode_planes(
         let (luma_leaves, _chroma_leaves) = code_partitions_dual(
             &mut enc,
             &mut ctx,
-            cw as u32,
-            ch as u32,
+            pic_w,
+            pic_h,
             luma_cfg,
             chroma_cfg,
             luma_decide,
@@ -3104,8 +3105,8 @@ fn encode_planes(
             let _ = crate::partition::code_partitions_mtt(
                 &mut throwaway,
                 &mut tctx,
-                cw as u32,
-                ch as u32,
+                pic_w,
+                pic_h,
                 cfg,
                 |x, y, w, h, can| mtt_rd_decide(&src_y, cw, x, y, w, h, qp, can, min_w, min_h),
                 |_enc, _ctx, _grid, x, y, w, h| {
@@ -3133,8 +3134,8 @@ fn encode_planes(
         let leaves = crate::partition::code_partitions_mtt(
             &mut enc,
             &mut ctx,
-            cw as u32,
-            ch as u32,
+            pic_w,
+            pic_h,
             cfg,
             |x, y, w, h, can| mtt_rd_decide(&src_y, cw, x, y, w, h, qp, can, min_w, min_h),
             |enc, ctx, grid, x, y, w, h| {
@@ -3224,8 +3225,8 @@ fn encode_planes(
     let _leaves = code_partitions(
         &mut enc,
         &mut ctx,
-        cw as u32,
-        ch as u32,
+        pic_w,
+        pic_h,
         decide_fn,
         |enc, ctx, grid, x, y, size| {
             let (xu, yu, nu) = (x as usize, y as usize, size as usize);

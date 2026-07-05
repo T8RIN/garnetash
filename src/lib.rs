@@ -312,18 +312,6 @@ fn validate_dims(width: u32, height: u32) -> Result<(), EncodeError> {
     Ok(())
 }
 
-/// Subsampled chroma cannot represent odd display extents: 4:2:0 needs even
-/// width and height, 4:2:2 needs even width. 4:4:4 and monochrome accept any.
-fn validate_chroma_dims(width: u32, height: u32, chroma: ChromaFormat) -> Result<(), EncodeError> {
-    let bad_w = !width.is_multiple_of(chroma.sub_w() as u32);
-    let bad_h = !height.is_multiple_of(chroma.sub_h() as u32);
-    if bad_w || bad_h {
-        Err(EncodeError::InvalidDimensions { width, height })
-    } else {
-        Ok(())
-    }
-}
-
 fn validate_buf_u8(
     buf: &[u8],
     width: u32,
@@ -351,7 +339,6 @@ pub fn encode_rgb_266(
 ) -> Result<Vec<u8>, EncodeError> {
     validate_dims(width, height)?;
     cfg.validate()?;
-    validate_chroma_dims(width, height, cfg.chroma)?;
     validate_buf_u8(rgb, width, height, 3)?;
     let bd = cfg.bit_depth.bits();
     let qp = if cfg.lossless {
@@ -394,7 +381,6 @@ pub fn encode_rgba_266(
 ) -> Result<Vec<u8>, EncodeError> {
     validate_dims(width, height)?;
     cfg.validate()?;
-    validate_chroma_dims(width, height, cfg.chroma)?;
     validate_buf_u8(rgba, width, height, 4)?;
     let bd = cfg.bit_depth.bits();
     let qp = if cfg.lossless {
@@ -436,7 +422,6 @@ pub fn encode_rgb_with_reconstruction(
 ) -> Result<(Vec<u8>, Vec<u8>), EncodeError> {
     validate_dims(width, height)?;
     cfg.validate()?;
-    validate_chroma_dims(width, height, cfg.chroma)?;
     validate_buf_u8(rgb, width, height, 3)?;
     let bd = cfg.bit_depth.bits();
     let qp = if cfg.lossless {
@@ -518,7 +503,6 @@ pub fn encode_yuv_266(
 ) -> Result<Vec<u8>, EncodeError> {
     validate_dims(width, height)?;
     cfg.validate()?;
-    validate_chroma_dims(width, height, cfg.chroma)?;
     let bd = cfg.bit_depth.bits();
     let qp = if cfg.lossless {
         LOSSLESS_QP
@@ -574,7 +558,6 @@ pub fn encode_rgba_with_alpha(
 ) -> Result<Vec<u8>, EncodeError> {
     validate_dims(width, height)?;
     cfg.validate()?;
-    validate_chroma_dims(width, height, cfg.chroma)?;
     validate_buf_u8(rgba, width, height, 4)?;
     if !matches!(cfg.bit_depth, BitDepth::Eight) {
         return Err(EncodeError::Unsupported(
@@ -642,7 +625,6 @@ fn encode_wide_stream(
 ) -> Result<Vec<u8>, EncodeError> {
     validate_dims(width, height)?;
     cfg.validate()?;
-    validate_chroma_dims(width, height, cfg.chroma)?;
     validate_buf_u16(rgb, width, height, stride_px)?;
     validate_range_wide(rgb, cfg.bit_depth)?;
     let qp = if cfg.lossless {
@@ -1622,6 +1604,27 @@ mod tests {
             encode_rgb_266(&[0; 3], 1, 1, &bad),
             Err(EncodeError::InvalidQuality(0))
         );
+    }
+
+    #[test]
+    fn encodes_odd_dimensions_with_subsampled_chroma() {
+        let (w, h) = (9u32, 11u32);
+        let rgb = vec![128; (w * h * 3) as usize];
+        for cfg in [
+            EncodeConfig::default(),
+            EncodeConfig::default().with_chroma(ChromaFormat::Yuv422),
+            EncodeConfig::default().with_lossless(true),
+        ] {
+            let stream = encode_rgb_266(&rgb, w, h, &cfg).unwrap();
+            let decoded = decode_266(&stream).unwrap();
+            assert_eq!((decoded.width, decoded.height), (w, h));
+            assert_eq!(decoded.luma_plane().samples(), (w * h) as usize);
+            let (cb, cr) = decoded.chroma_planes().unwrap();
+            let chroma_samples = (w.div_ceil(cfg.chroma.sub_w() as u32)
+                * h.div_ceil(cfg.chroma.sub_h() as u32)) as usize;
+            assert_eq!(cb.samples(), chroma_samples);
+            assert_eq!(cr.samples(), chroma_samples);
+        }
     }
 
     #[test]
